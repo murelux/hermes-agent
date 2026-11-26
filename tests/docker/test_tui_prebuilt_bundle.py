@@ -40,14 +40,17 @@ def _exec_py(image: str, py: str) -> str:
 
 
 def test_photon_baked_dependencies_load_without_writes_or_network(built_image: str) -> None:
-    """The non-root runtime uses the baked sidecar, including its npm patch."""
+    """The non-root runtime uses the baked sidecar, including its Spectrum patch."""
     py = '''
 import subprocess
+from hermes_cli.js_runtime import js_runtime_bin, use_bun_js_runtime
 from plugins.platforms.photon.sidecar_paths import SOURCE_SIDECAR_DIR, resolve_sidecar_dir, dir_writable
 sidecar = resolve_sidecar_dir()
 assert sidecar == SOURCE_SIDECAR_DIR, sidecar
 assert not dir_writable(sidecar / 'node_modules')
-child = subprocess.run(['node', '--input-type=module', '-e',
+runtime = js_runtime_bin()
+eval_flag = ['-e'] if use_bun_js_runtime() else ['--input-type=module', '-e']
+child = subprocess.run([runtime, *eval_flag,
     "import {patchSpectrumTs} from './patch-spectrum-mixed-attachments.mjs'; "
     "patchSpectrumTs(); await import('spectrum-ts'); console.log('PHOTON_LOADED')"],
     cwd=sidecar, capture_output=True, text=True, timeout=30)
@@ -70,6 +73,7 @@ def test_prebuilt_bundle_present_and_no_runtime_install(built_image: str) -> Non
         "  'dist_entry_exists': (ui / 'dist' / 'entry.js').is_file(),\n"
         "  'argv': argv,\n"
         "  'uses_prebuilt': ('dist/entry.js' in ' '.join(argv)) and ('npm' not in argv[0].lower()),\n"
+        "  'uses_bun': 'bun' in Path(argv[0]).name.lower() and '--expose-gc' not in argv,\n"
         "}\n"
         "print(json.dumps(out))\n"
     )
@@ -78,6 +82,7 @@ def test_prebuilt_bundle_present_and_no_runtime_install(built_image: str) -> Non
     # With HERMES_TUI_DIR set, _make_tui_argv returns the prebuilt path BEFORE
     # ever reaching the install check — so the resolved argv is what matters.
     assert out["uses_prebuilt"], f"launcher did not take prebuilt path: argv={out['argv']!r}"
+    assert out["uses_bun"], f"Debian Docker image should launch TUI with Bun: argv={out['argv']!r}"
     assert "npm" not in out["argv"][0].lower(), (
         f"launcher resolved to an npm invocation, not the prebuilt bundle: {out['argv']!r}"
     )

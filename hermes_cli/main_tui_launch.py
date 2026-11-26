@@ -139,6 +139,25 @@ def _tui_node_bin(bin: str) -> str:
     return path
 
 
+def _tui_entry_argv(entry: Path) -> list[str]:
+    """Build production TUI argv: Bun on Debian-family, ``node --expose-gc`` elsewhere."""
+    from hermes_cli.js_runtime import js_runtime_bin, missing_runtime_hint, script_argv, use_bun_js_runtime
+
+    if use_bun_js_runtime():
+        import pm
+
+        try:
+            bun = js_runtime_bin()
+        except (pm.InstallError, OSError) as exc:
+            print(
+                f"Bun is required for the TUI on Debian-family Linux but could not be prepared ({exc}). "
+                f"{missing_runtime_hint()} To keep working now, run `hermes --cli`."
+            )
+            sys.exit(1)
+        return script_argv(entry, runtime_bin=bun)
+    return [_tui_node_bin("node"), "--expose-gc", str(entry)]
+
+
 def _make_tui_argv(tui_dir: Path, tui_dev: bool, notices: Optional[list] = None) -> tuple[list[str], Path]:
     """TUI: --dev → tsx src; else node dist (HERMES_TUI_DIR prebuilt or esbuild).
 
@@ -167,24 +186,25 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool, notices: Optional[list] = None)
         if ext_dir:
             p = Path(ext_dir)
             if (p / "dist" / "entry.js").is_file():
-                return [_tui_node_bin("node"), "--expose-gc", str(p / "dist" / "entry.js")], p
+                return _tui_entry_argv(p / "dist" / "entry.js"), p
 
         bundled = _find_bundled_tui()
         if bundled is not None:
-            return [_tui_node_bin("node"), "--expose-gc", str(bundled)], bundled.parent
+            return _tui_entry_argv(bundled), bundled.parent
 
-    # About to pnpm install/build from source, so the workspace must exist.
+    # About to install/build from source, so the workspace must exist.
     if not ext_dir:
         _ensure_tui_workspace(tui_dir)
 
     if not tui_dev and not _tui_need_rebuild(tui_dir):
-        return [_tui_node_bin("node"), "--expose-gc", str(tui_dir / "dist/entry.js")], tui_dir
+        return _tui_entry_argv(tui_dir / "dist/entry.js"), tui_dir
 
+    from hermes_cli.js_runtime import use_bun_js_runtime
     from hermes_cli.source_build import build_source_tui, prepare_launch_dependencies, source_build_env
 
     project_root = tui_dir.parent
     try:
-        # Acquiring pnpm is part of preparation: offline, it fails like the install.
+        # Acquiring pnpm (or bun on Debian-family) is part of preparation: offline, it fails like the install.
         env = source_build_env()
         prepare_launch_dependencies(project_root, env=env)
     except (OSError, subprocess.SubprocessError, RuntimeError) as exc:
@@ -203,8 +223,12 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool, notices: Optional[list] = None)
         logger.warning("TUI launch fell back to the previous build: its Node dependencies could not be prepared: %s", exc)
         if notices is not None:
             notices.append(notice)
-        return [_tui_node_bin("node"), "--expose-gc", str(previous)], tui_dir
+        return _tui_entry_argv(previous), tui_dir
     if tui_dev:
+        if use_bun_js_runtime() and env.get("HERMES_BUILD_JS_RUNTIME"):
+            bun = env["HERMES_BUILD_JS_RUNTIME"]
+            subprocess.run([bun, "run", "build"], cwd=tui_dir / "packages/hermes-ink", env=env, check=True, timeout=600)
+            return [bun, "src/entry.tsx"], tui_dir
         # tsx imports @hermes/ink's built exports; the production bundle instead
         # compiles its source directly through scripts/build/tui.mjs.
         pnpm = shutil.which("pnpm", path=env["PATH"])
@@ -213,6 +237,11 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool, notices: Optional[list] = None)
         return ([str(tsx), "src/entry.tsx"] if tsx.exists() else [pnpm, "start"]), tui_dir
 
     build_source_tui(project_root, env=env)
+    if use_bun_js_runtime():
+        bun = env.get("HERMES_BUILD_JS_RUNTIME")
+        if bun:
+            return [bun, str(tui_dir / "dist/entry.js")], tui_dir
+        return _tui_entry_argv(tui_dir / "dist/entry.js"), tui_dir
     node = shutil.which("node", path=env["PATH"])
     return [node, "--expose-gc", str(tui_dir / "dist/entry.js")], tui_dir
 
@@ -495,10 +524,14 @@ def _launch_tui(
     # gracefully instead of being reaped silently. Token-level merge respects a
     # user-supplied --max-old-space-size. --expose-gc is NOT added here: Node
     # rejects it in NODE_OPTIONS; _make_tui_argv() passes it as a direct flag.
-    _tokens = env.get("NODE_OPTIONS", "").split()
-    if not any(t.startswith("--max-old-space-size=") for t in _tokens):
-        _tokens.append(f"--max-old-space-size={_resolve_tui_heap_mb()}")
-    env["NODE_OPTIONS"] = " ".join(_tokens)
+    # Bun uses JavaScriptCore and rejects V8 heap flags, so skip on Debian Bun.
+    from hermes_cli.js_runtime import use_bun_js_runtime
+
+    if not use_bun_js_runtime():
+        _tokens = env.get("NODE_OPTIONS", "").split()
+        if not any(t.startswith("--max-old-space-size=") for t in _tokens):
+            _tokens.append(f"--max-old-space-size={_resolve_tui_heap_mb()}")
+        env["NODE_OPTIONS"] = " ".join(_tokens)
     # HERMES_TUI_RESUME is an internal hand-off to the Ink app. We start from a
     # full os.environ snapshot, so a stale exported value would make a plain
     # `hermes --tui` try to resume a non-existent session; only forward the id

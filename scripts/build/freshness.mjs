@@ -29,7 +29,7 @@ const tuiInputs = [
   ...['ui-tui', 'ui-tui/packages/hermes-ink', 'apps/shared'].flatMap(root => [
     `${root}/src`, `${root}/package.json`, `${root}/tsconfig.json`,
   ]),
-  'tsconfig.json', 'package.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml', '.npmrc', 'pm/lock.json',
+  'tsconfig.json', 'package.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml', 'bun.lock', '.npmrc', 'pm/lock.json',
   'scripts/build/tui.mjs', 'scripts/build/frontend-common.mjs', 'scripts/build/freshness.mjs',
   'ui-tui/scripts/gateway_bootstrap.py', 'ui-tui/scripts/clipboard_image.py',
 ]
@@ -49,7 +49,7 @@ function productInputs(product) {
   const workspace = workspaces[product]
   if (!workspace) throw new Error(`Unknown frontend product: ${product}`)
   return [
-    workspace, 'apps/shared', 'package.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml', '.npmrc', 'pm/lock.json',
+    workspace, 'apps/shared', 'package.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml', 'bun.lock', '.npmrc', 'pm/lock.json',
     'scripts/build',
     'scripts/generate-icons.mjs', 'scripts/generate_icons.py',
     // The root install-stamp.json is runtime identity rewritten after every install; desktop's
@@ -194,12 +194,17 @@ function preparedPaths(inputs) {
 // then certify a product whose packaged clock disagrees with electron-main.mjs.
 // Undefined (tui/web, which have no stamp) is dropped from the receipt, which is
 // exactly the "predates this" shape productCurrent already tolerates.
+function currentRuntimeId() {
+  return process.versions.bun ? `bun:${process.versions.bun}` : `node:${process.versions.node}`
+}
+
 export function recordProduct({ source, product, out, inputs, stampClock }) {
   if (JSON.stringify(buildInputs(source, product, preparedPaths(inputs))) !== JSON.stringify(inputs)) {
     throw new Error('Build inputs changed during compilation; retry the build')
   }
   writeFileSync(join(out, receiptName), JSON.stringify({
     schema: 1, product, platform: process.platform, arch: process.arch, node: process.versions.node,
+    ...(process.versions.bun ? { runtime: currentRuntimeId() } : {}),
     inputs, stampClock, outputHash: outputHash(out),
   }) + '\n')
 }
@@ -214,12 +219,15 @@ export function outputIntact(out, product) {
   } catch { return false }
 }
 
-/** The receipt in ``out`` when it was written for ``product`` by this platform, arch and Node. */
+/** The receipt in ``out`` when it was written for ``product`` by this platform, arch and runtime. */
 function hostReceipt(out, product) {
   const saved = JSON.parse(readFileSync(join(out, receiptName), 'utf8'))
+  const runtimeOk = saved.runtime !== undefined
+    ? saved.runtime === currentRuntimeId()
+    : (!process.versions.bun && saved.node === process.versions.node)
   return saved.schema === 1 && saved.product === product
     && saved.platform === process.platform && saved.arch === process.arch
-    && saved.node === process.versions.node ? saved : null
+    && runtimeOk ? saved : null
 }
 
 export function productCurrent({ source, product, out, prepared }) {

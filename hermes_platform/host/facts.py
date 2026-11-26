@@ -50,6 +50,17 @@ def os_family() -> str:
 
 
 @functools.cache
+def is_debian_family() -> bool:
+    """Return whether this host is a Linux Debian-family distribution (never macOS/Windows/Termux)."""
+    from hermes_platform.host.runtime import is_termux
+    from pm._distro import DEBIAN_FAMILY_IDS, os_release_tokens
+
+    if not sys.platform.startswith("linux") or is_termux():
+        return False
+    return bool(os_release_tokens() & DEBIAN_FAMILY_IDS)
+
+
+@functools.cache
 def process_arch() -> str:
     """Return the architecture of this Python process."""
     if sys.platform == "win32":
@@ -456,6 +467,9 @@ def interactive_session() -> bool:
 
 def clear_caches() -> None:
     """Clear every cached host fact."""
-    for fact in (os_family, process_arch, native_arch, cpu_model, cpu_vendor, ram_total_bytes, gpu_class,
+    from pm._distro import is_debian_family as pm_is_debian_family
+
+    pm_is_debian_family.cache_clear()
+    for fact in (os_family, is_debian_family, process_arch, native_arch, cpu_model, cpu_vendor, ram_total_bytes, gpu_class,
                  nvidia_gpus, _windows_display_adapters):
         fact.cache_clear()

@@ -388,9 +388,23 @@ def _check_lightpanda() -> None:
 
 @doctor_check()
 def _check_node_and_browser(should_fix: bool, f: Finding) -> None:
-    """Node.js, the Chromium browser_exec launches, Lightpanda engine."""
-    # Only PM's Node counts; Termux's APT distribution is the one that relies on `pkg install nodejs`.
-    if _pm_tool_path("node") or (_is_termux() and _safe_which("node")):
+    """JS runtime (Bun on Debian-family Linux, Node.js elsewhere), Chromium, Lightpanda engine."""
+    from hermes_cli.js_runtime import find_bun_executable, use_bun_js_runtime
+
+    if use_bun_js_runtime():
+        bun = find_bun_executable() or _pm_tool_path("bun")
+        if bun:
+            check_ok("Bun", f"({bun})")
+        else:
+            check_warn(
+                "Bun not found",
+                "(run: hermes pm install bun; or set HERMES_JS_RUNTIME=node to fall back to Node.js)",
+            )
+        if _pm_tool_path("node"):
+            check_ok("Node.js", "(optional on Debian-family)")
+        else:
+            check_info("Node.js not installed (optional on Debian-family; Bun is the default JS runtime)")
+    elif _pm_tool_path("node") or (_is_termux() and _safe_which("node")):
         check_ok("Node.js")
     elif _is_termux():
         check_info("Node.js not found (optional; install on Termux with: pkg install nodejs)")

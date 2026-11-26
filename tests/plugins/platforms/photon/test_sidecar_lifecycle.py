@@ -20,6 +20,7 @@ from plugins.platforms.photon.adapter import PhotonAdapter
 
 
 def _make_adapter(monkeypatch: pytest.MonkeyPatch) -> PhotonAdapter:
+    monkeypatch.setenv("HERMES_JS_RUNTIME", "node")
     monkeypatch.setenv("PHOTON_PROJECT_ID", "test-project-id")
     monkeypatch.setenv("PHOTON_PROJECT_SECRET", "test-project-secret")
     # Stand-in for PM's node; the user's PATH node is never picked up.

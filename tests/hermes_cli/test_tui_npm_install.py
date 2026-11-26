@@ -41,6 +41,7 @@ def tui_source(source_products, monkeypatch):
     monkeypatch.delenv("HERMES_TUI_FORCE_BUILD", raising=False)
     monkeypatch.delenv("TERMUX_VERSION", raising=False)
     monkeypatch.setenv("PREFIX", "/usr")
+    monkeypatch.setenv("HERMES_JS_RUNTIME", "node")
     monkeypatch.setenv("HERMES_NODE", shutil.which("node"))
     monkeypatch.setattr(main_tui_launch, "_find_bundled_tui", lambda: None)
     return source_products
@@ -286,6 +287,7 @@ def test_prebuilt_bundle_launch_does_not_touch_missing_source(tmp_path, monkeypa
     bundled.parent.mkdir()
     bundled.write_text("console.log('prebuilt')")
     monkeypatch.delenv("HERMES_TUI_DIR", raising=False)
+    monkeypatch.setenv("HERMES_JS_RUNTIME", "node")
     monkeypatch.setenv("HERMES_NODE", shutil.which("node"))
     monkeypatch.setattr(main_tui_launch, "_find_bundled_tui", lambda: bundled)
     argv, cwd = main_tui_launch._make_tui_argv(tmp_path / "missing-source", tui_dev=False)

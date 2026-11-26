@@ -319,8 +319,14 @@ def _cmd_status(_args: argparse.Namespace) -> int:
     # auth.print_credential_summary's emit callback is the only sink that sees
     # credential-derived strings (keeps cli.py taint-free for CodeQL).
     photon_auth.print_credential_summary(print)
-    node_bin = find_node_executable("node")
-    print(f"  node binary         : {node_bin or '✗ missing (install Node 18+)'}")
+    from hermes_cli.js_runtime import find_js_runtime, missing_runtime_hint, use_bun_js_runtime
+
+    using_bun = use_bun_js_runtime()
+    runtime_bin = find_js_runtime()
+    if using_bun:
+        print(f"  bun binary          : {runtime_bin or f'✗ missing ({missing_runtime_hint()})'}")
+    else:
+        print(f"  node binary         : {runtime_bin or '✗ missing (install Node 18+)'}")
     print(f"  sidecar deps        : {'✓ installed' if sidecar_deps_installed() else '✗ run `hermes photon install-sidecar`'}")
     print(f"  telemetry           : {'on' if _telemetry_enabled() else 'off'} (`hermes photon telemetry on|off`)")
     photon_auth.print_routing_status(print)
@@ -356,39 +362,50 @@ def _cmd_telemetry(args: argparse.Namespace) -> int:
 
 def _install_sidecar() -> int:
     import pm
+    from hermes_cli.js_runtime import install_deps_command, use_bun_js_runtime
+    from .sidecar_paths import _BUN_INSTALL_STAMP
 
+    using_bun = use_bun_js_runtime()
     try:
-        npm = find_node_executable("npm")
-        env = with_hermes_node_path()
-        if npm is None:
-            env = pm.ensure("npm", explicit=True).env
-            installed = pm.installed_package("npm")
-            if installed is None or installed.binary is None:
-                raise pm.InstallError("npm", "ensured but no selected binary was recorded")
-            npm = str(installed.binary)
+        frozen_cmd, env = install_deps_command(frozen=True, explicit=True)
+        fallback_cmd, _ = install_deps_command(frozen=False, explicit=True)
     except pm.InstallError as exc:
         print(f"Could not prepare Photon dependencies: {exc}", file=sys.stderr)
         return 1
     # spectrum-ts is pinned exactly (the SDK ships breaking majors); upgrades are deliberate —
-    # never `@latest` (see README "Upgrading spectrum-ts"). `npm ci` installs the lockfile
-    # verbatim; `npm install` is the fallback for a missing/drifted lockfile.
-    print(f"  $ cd {_sidecar_dir()} && {npm} ci")
+    # never `@latest` (see README "Upgrading spectrum-ts"). Frozen install matches the lockfile
+    # verbatim; plain install is the fallback for a missing/drifted lockfile.
+    print(f"  $ cd {_sidecar_dir()} && {' '.join(frozen_cmd)}")
 
-    def _run(verb: str) -> subprocess.CompletedProcess:
+    def _run(cmd: list[str]) -> subprocess.CompletedProcess:
         # stdout streams to the terminal; stderr is captured so the failure reason can be
         # persisted for check_requirements() to surface later.
         proc = subprocess.run(
-            [npm, verb], stdin=subprocess.DEVNULL, cwd=str(_sidecar_dir()), check=False, stderr=subprocess.PIPE, text=True, env=env)
+            cmd, stdin=subprocess.DEVNULL, cwd=str(_sidecar_dir()), check=False, stderr=subprocess.PIPE, text=True, env=env)
         if proc.stderr:
             print(proc.stderr, end="", file=sys.stderr)
         return proc
-    proc = _run("ci")
+
+    proc = _run(frozen_cmd)
     if proc.returncode != 0:
-        print(f"  npm ci failed — falling back to:  {npm} install")
-        proc = _run("install")
+        print(f"  frozen install failed — falling back to:  {' '.join(fallback_cmd)}")
+        proc = _run(fallback_cmd)
+    if proc.returncode == 0 and using_bun:
+        # Bun skips untrusted package.json postinstall hooks by default; apply the Spectrum patch explicitly.
+        patch_script = _sidecar_dir() / "patch-spectrum-mixed-attachments.mjs"
+        if patch_script.is_file():
+            patch_proc = _run([frozen_cmd[0], str(patch_script), str(_sidecar_dir())])
+            if patch_proc.returncode != 0:
+                print("spectrum-ts patch failed after bun install", file=sys.stderr)
+                proc = patch_proc
+        if proc.returncode == 0:
+            with contextlib.suppress(OSError):
+                stamp = _sidecar_dir() / "node_modules" / _BUN_INSTALL_STAMP
+                stamp.parent.mkdir(parents=True, exist_ok=True)
+                stamp.write_text("bun\n", encoding="utf-8")
     error = (proc.stderr or "").strip()[:_NPM_ERROR_LOG_MAX_CHARS]  # bounded to what check_requirements surfaces
     if proc.returncode != 0:
-        print("npm install failed", file=sys.stderr)
+        print(f"{'bun' if using_bun else 'npm'} install failed", file=sys.stderr)
     with contextlib.suppress(OSError):
         if proc.returncode == 0:
             _npm_error_log().unlink()

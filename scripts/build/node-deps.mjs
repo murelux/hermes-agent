@@ -257,12 +257,72 @@ function dependencyInputs({ source, workspaces, env, nativeToolchain, electron }
   return { lockText, projects, selected, prepareElectron, pnpm, args, key: inputs.digest('hex'), nativeKey }
 }
 
+// Bun dependency preparation (Linux Debian-family pure-Bun builds for non-desktop workspaces).
+// Runs only when this script is executed under Bun (`process.versions.bun`) and `apps/desktop`
+// (Electron native addons) is not requested.
+function prepareBunDependencies({ source, workspaces, env, reuse, install }) {
+  const lock = lockCheckout(source)
+  const receipt = join(source, 'node_modules/.hermes-node-deps')
+  const lockPath = join(source, 'bun.lock')
+  const selected = [...new Set(workspaces.map(workspace => {
+    if (workspace === '.' || !existsSync(join(source, workspace, 'package.json'))) {
+      throw new Error(`Unknown or missing workspace: ${workspace}`)
+    }
+    return workspace
+  }))].sort()
+  const hasBunLock = existsSync(lockPath)
+  const inputs = createHash('sha256').update(JSON.stringify({
+    bun: process.versions.bun, platform: process.platform, arch: process.arch, selected,
+  }))
+  const files = ['package.json', 'pnpm-workspace.yaml', ...(hasBunLock ? ['bun.lock'] : []), ...selected.map(p => join(p, 'package.json'))].sort()
+  for (const file of files) {
+    inputs.update(file).update('\0').update(existsSync(join(source, file)) ? readFileSync(join(source, file)) : '<missing>').update('\0')
+  }
+  const expected = `${inputs.digest('hex')}\n`
+  try {
+    if (reuse && existsSync(receipt) && readFileSync(receipt, 'utf8') === expected) {
+      lock.check()
+      console.log(`node-deps: reusing completed Bun install (${selected.join(', ')})`)
+      lock.release()
+      return { source, workspaces: selected }
+    }
+    if (!install) throw new Error('Workspace dependencies are stale or missing and lazy installs are disabled; run an explicit build/update')
+    const bunArgs = [
+      'install',
+      '--no-save',
+      '--ignore-scripts',
+      ...(hasBunLock ? ['--frozen-lockfile'] : []),
+      ...selected.flatMap(w => ['--filter', `./${w}`]),
+    ]
+    console.log(`node-deps: installing workspace dependencies with bun (${selected.join(', ')})...`)
+    lock.check()
+    lock.run(process.execPath, bunArgs, { cwd: source, env })
+    if (reuse) {
+      mkdirSync(join(source, 'node_modules'), { recursive: true })
+      lock.check()
+      writeFileSync(receipt, expected)
+    }
+  } catch (error) {
+    try {
+      lock.release()
+    } catch (releaseError) {
+      console.warn(`node-deps: could not release the checkout lock (${releaseError.message})`)
+    }
+    throw error
+  }
+  lock.release()
+  return { source, workspaces: selected }
+}
+
 /** Install the full requested workspace union in one strict, locked operation.
  *  ``electron: false`` leaves Desktop's Electron binary unprepared, for builds that never run it. */
 export function prepareNodeDependencies({ source, workspaces, env = process.env, reuse = false, install = true, nativeToolchain, electron = true }) {
   source = resolve(source)
   if (!Array.isArray(workspaces) || workspaces.length === 0) {
     throw new Error('Select at least one workspace; implicit all-workspace installation is not allowed')
+  }
+  if (process.versions.bun && !workspaces.includes('apps/desktop')) {
+    return prepareBunDependencies({ source, workspaces, env, reuse, install })
   }
   // This receipt certifies dependency preparation, never compiled product freshness.
   // Keep it inside the cached tree so removing node_modules also removes the receipt.

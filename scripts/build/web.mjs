@@ -71,7 +71,9 @@ function applyThreadCap() {
 
 // Re-exec with the heap cap appended to NODE_OPTIONS unless the user already
 // set one. Runs only for direct invocation (isMain), before vite is imported.
+// Skipped under Bun: JavaScriptCore does not accept V8's --max-old-space-size.
 async function ensureHeapCapForFreshProcess() {
+  if (process.versions.bun) return
   const tokens = (process.env.NODE_OPTIONS ?? '').split(/\s+/).filter(Boolean)
   if (tokens.some(token => token.startsWith('--max-old-space-size='))) return
   const explicit = Number.parseInt(process.env.HERMES_WEB_BUILD_MAX_OLD_SPACE_SIZE ?? '', 10)

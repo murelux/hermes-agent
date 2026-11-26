@@ -115,8 +115,25 @@ def _whatsapp_warn_customer_facing(wa_mode: str, get_env_value) -> None:
          "    https://hermes-agent.nousresearch.com/docs/user-guide/messaging/whatsapp/#customer-facing-bot")
 
 
+def _whatsapp_package_hash(bridge_dir) -> str:
+    import hashlib
+    try:
+        return hashlib.sha256((bridge_dir / "package.json").read_bytes()).hexdigest()[:16]
+    except OSError:
+        return ""
+
+
 def _whatsapp_bridge_dependencies_current(bridge_dir) -> bool:
     """An existing node_modules directory can still contain the previous bridge build."""
+    from hermes_cli.js_runtime import use_bun_js_runtime
+
+    if use_bun_js_runtime():
+        stamp = bridge_dir / "node_modules" / ".hermes-pkg-hash"
+        pkg_hash = _whatsapp_package_hash(bridge_dir)
+        try:
+            return (bridge_dir / "node_modules").is_dir() and bool(pkg_hash) and stamp.read_text(encoding="utf-8-sig").strip() == pkg_hash
+        except OSError:
+            return False
     try:
         desired = json.loads((bridge_dir / "package-lock.json").read_text(encoding="utf-8-sig"))
         installed = json.loads((bridge_dir / "node_modules" / ".package-lock.json").read_text(encoding="utf-8-sig"))
@@ -137,8 +154,8 @@ def _whatsapp_bridge_dependencies_current(bridge_dir) -> bool:
 
 
 def _whatsapp_install_bridge(bridge_dir) -> bool:
-    """Step 4 of ``hermes whatsapp``: ``npm install`` the bridge when needed. False = stop."""
-    from hermes_constants import find_node_executable, with_hermes_node_path
+    """Step 4 of ``hermes whatsapp``: install bridge dependencies when needed. False = stop."""
+    from hermes_cli.js_runtime import install_deps_command, use_bun_js_runtime
     from utils import env_int
     if _whatsapp_bridge_dependencies_current(bridge_dir):
         print("✓ Bridge dependencies already installed")
@@ -146,17 +163,10 @@ def _whatsapp_install_bridge(bridge_dir) -> bool:
     print("\n→ Installing WhatsApp bridge dependencies (this can take a few minutes)...")
     import pm
 
-    npm = find_node_executable("npm")
     try:
-        env = with_hermes_node_path()
-        if npm is None:
-            env = pm.ensure("npm", explicit=True).env
-            installed = pm.installed_package("npm")
-            if installed is None or installed.binary is None:
-                raise pm.InstallError("npm", "npm binary is missing after preparation")
-            npm = str(installed.binary)
+        install_argv, env = install_deps_command(frozen=False, no_audit=True, no_progress=True, explicit=True)
         result = subprocess.run(
-            [npm, "install", "--no-fund", "--no-audit", "--progress=false"],
+            install_argv,
             cwd=str(bridge_dir), stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True,
             timeout=env_int("WHATSAPP_NPM_INSTALL_TIMEOUT", 300),
             encoding="utf-8", errors="replace", env=env, check=False)
@@ -169,8 +179,13 @@ def _whatsapp_install_bridge(bridge_dir) -> bool:
     if result.returncode != 0:
         err = (result.stderr or "").strip()
         preview = "\n".join(err.splitlines()[-30:]) if err else "(no output)"
-        _say("  ✗ npm install failed:", preview)
+        tool_label = "bun install" if use_bun_js_runtime() else "npm install"
+        _say(f"  ✗ {tool_label} failed:", preview)
         return False
+    pkg_hash = _whatsapp_package_hash(bridge_dir)
+    if pkg_hash:
+        with contextlib.suppress(OSError):
+            (bridge_dir / "node_modules" / ".hermes-pkg-hash").write_text(pkg_hash, encoding="utf-8")
     print("  ✓ Dependencies installed")
     return True
 
@@ -246,24 +261,25 @@ def cmd_whatsapp(args):
         print("📱 Open WhatsApp on your phone, then scan:")
     _say("", "   Settings → Linked Devices → Link a Device", "─" * 50, "")
     import pm
+    from hermes_cli.js_runtime import js_runtime_bin, js_runtime_env, runtime_display_name, script_argv
 
-    node = find_node_executable("node")
-    if node is None:
-        try:
-            pm.ensure("node", explicit=True)
-            installed = pm.installed_package("node")
-            if installed is None or installed.binary is None:
-                raise pm.InstallError("node", "Node.js binary is missing after preparation")
-            node = str(installed.binary)
-        except pm.InstallError as exc:
-            print(f"  ✗ Node.js preparation failed: {exc}")
-            return
-    pair_command = [node, str(bridge_script), "--pair-only", "--session", str(session_dir)]
+    try:
+        runtime_bin = js_runtime_bin(explicit=True)
+    except pm.InstallError as exc:
+        print(f"  ✗ {runtime_display_name()} preparation failed: {exc}")
+        return
+    pair_command = script_argv(
+        bridge_script,
+        "--pair-only",
+        "--session",
+        str(session_dir),
+        runtime_bin=runtime_bin,
+    )
     if getattr(args, "passkey_browser", None):
         pair_command.extend(["--passkey-browser", args.passkey_browser])
     from tools.environments.local import hermes_subprocess_env
-    # Pair-only bridge.js reads no Hermes env; its npm deps must not see Hermes' credentials.
-    pair_env = with_hermes_node_path(hermes_subprocess_env())
+    # Pair-only bridge.js reads no Hermes env; its deps must not see Hermes' credentials.
+    pair_env = js_runtime_env(hermes_subprocess_env())
     pair_result = None
     with contextlib.suppress(KeyboardInterrupt):
         # health: allow HX006 -- interactive child: ends on success, failure or Ctrl+C; a fixed bound kills it mid-prompt

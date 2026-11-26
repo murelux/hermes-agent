@@ -112,9 +112,9 @@ If these dependencies are damaged, run `hermes pm repair` and restart Hermes.
 For source setup, use the [PM developer workflow](../../reference/package-management.md#developer-workflow).
 Messaging and voice extras are separate requests, not implied by `all`.
 
-When you run `hermes dashboard` without the dependencies, it will tell you what to install. If the frontend hasn't been built yet, it builds automatically on first launch with the Node and pnpm Hermes provisions.
+When you run `hermes dashboard` without the dependencies, it will tell you what to install. If the frontend hasn't been built yet, it builds automatically on first launch — using PM-managed **Bun** on Debian-family Linux (set `HERMES_JS_RUNTIME=node` to fall back to Node.js/pnpm), and PM-managed Node.js/pnpm on macOS, Windows, Termux, and other Linux distributions.
 
-The Chat tab is part of every `hermes dashboard` launch — the embedded browser chat pane (running the TUI over PTY/WebSocket) is always available, with no extra flag required.
+The Chat tab is part of every `hermes dashboard` launch — the embedded browser chat pane (running the TUI over PTY/WebSocket, using Bun on Debian-family Linux and Node.js elsewhere) is always available, with no extra flag required.
 
 ## Pages
 

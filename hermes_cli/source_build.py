@@ -10,15 +10,22 @@ import sys
 
 def source_product_current(project_root: Path, product: str, out: Path) -> bool:
     """Read the compiler's receipt without acquiring tools or dependencies."""
+    from hermes_cli.js_runtime import find_bun_executable, js_runtime_env, use_bun_js_runtime
     from pm import env_for, installed_package
 
-    installed = installed_package("node")
-    if installed is None or installed.binary is None:
-        return False  # Only PM's Node may run the receipt reader; never the user's PATH copy.
-    node, env = str(installed.binary), env_for("node")
+    if use_bun_js_runtime() and product != "desktop":
+        bun = find_bun_executable()
+        if bun is None:
+            return False
+        runtime_bin, env = bun, js_runtime_env()
+    else:
+        installed = installed_package("node")
+        if installed is None or installed.binary is None:
+            return False  # Only PM's Node may run the receipt reader; never the user's PATH copy.
+        runtime_bin, env = str(installed.binary), env_for("node")
     try:
         result = subprocess.run(
-            [node, str(project_root / "scripts/build/freshness.mjs"),
+            [runtime_bin, str(project_root / "scripts/build/freshness.mjs"),
              "--source", str(project_root), "--product", product, "--out", str(out)],
             cwd=project_root, env=env, capture_output=True, text=True, encoding="utf-8", errors="replace", check=True,
         )
@@ -27,7 +34,9 @@ def source_product_current(project_root: Path, product: str, out: Path) -> bool:
         return False
 
 
-def source_build_env(base_env: dict | None = None, *, explicit: bool = False, verify: bool = True) -> dict[str, str]:
+def source_build_env(base_env: dict | None = None, *, explicit: bool = False, verify: bool = True,
+                     force_pnpm: bool = False) -> dict[str, str]:
+    from hermes_cli.js_runtime import ensure_bun_executable, use_bun_js_runtime
     from pm import ensure
     from pm.environments import project_python, running_from_selected_environment
     from pm.packages import pnpm_env
@@ -48,6 +57,10 @@ def source_build_env(base_env: dict | None = None, *, explicit: bool = False, ve
     if vc_runtime.is_file():
         env["HERMES_VC_RUNTIME"] = str(vc_runtime)
     env.pop("ESBUILD_BINARY_PATH", None)
+    if use_bun_js_runtime() and not force_pnpm:
+        bun_bin, bun_env = ensure_bun_executable(explicit=explicit)
+        merged = {**env, "PATH": bun_env["PATH"], "HERMES_BUILD_JS_RUNTIME": bun_bin}
+        return merged
     npmrc = user_npmrc(env)
     twins = [name for name in env if name.upper() == "NPM_CONFIG_USERCONFIG"]
     if npmrc == hermes_npmrc() or twins:
@@ -100,7 +113,8 @@ def run_in_custody(project_root: Path, command: list, label: str, **kwargs):
 
 
 def run_source_script(project_root: Path, script: str, *args: str, env: dict, label: str) -> None:
-    command = [shutil.which("node", path=env["PATH"]), str(project_root / script), *args]
+    runtime = env.get("HERMES_BUILD_JS_RUNTIME") or shutil.which("node", path=env["PATH"])
+    command = [runtime, str(project_root / script), *args]
     run_in_custody(project_root, command, label, indent="  ", cwd=project_root, env=env)
 
 
@@ -129,7 +143,7 @@ def prepare_launch_dependencies(project_root: Path, *, env: dict) -> None:
     workspaces = ("ui-tui", "web") + (("apps/desktop",) if desktop else ())
     # Someone is waiting for this launch, which falls back to the previous build when it fails:
     # offline, pnpm's default retries spend ~70 s before failing, one retry ~10 s.
-    if not _fetch_retries_configured(project_root, env):
+    if not env.get("HERMES_BUILD_JS_RUNTIME") and not _fetch_retries_configured(project_root, env):
         env = {**env, "pnpm_config_fetch_retries": "1"}
     prepare_source_dependencies(project_root, workspaces, env=env)
 
@@ -242,10 +256,13 @@ def build_update_products(project_root: Path, *, desktop: bool, after_dependenci
         publish_stage("Updating Node dependencies")
 
         def node_dependencies(selected: tuple[str, ...]) -> None:
-            # Acquiring pnpm is part of this step: its failure must be reported like the install's.
+            # Acquiring pnpm (or bun on Debian-family non-desktop builds) is part of this step:
+            # its failure must be reported like the install's.
             # A recorded install is trusted as at startup (re-hashing the toolchain costs seconds per
             # tail); a missing one is still installed explicitly.
-            env.update(source_build_env(explicit=True, verify=False))
+            need_pnpm = "apps/desktop" in selected
+            env.clear()
+            env.update(source_build_env(explicit=True, verify=False, force_pnpm=need_pnpm))
             prepare_source_dependencies(project_root, selected, env=env, explicit=True)
 
         # Every product compiles from these node_modules: without them there is nothing to build.

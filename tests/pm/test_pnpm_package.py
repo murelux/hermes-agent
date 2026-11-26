@@ -58,6 +58,8 @@ def test_every_target_with_a_pinned_node_can_install_the_js_workspaces():
 def test_a_bare_install_provisions_pnpm_only_where_it_builds_the_frontends(monkeypatch):
     from pm import registry, store
 
+    # Pin the non-Debian/Node path so Ubuntu CI runners still assert the pnpm contract.
+    monkeypatch.setenv("HERMES_JS_RUNTIME", "node")
     names = Lockfile(paths.lockfile_path()).names()
     monkeypatch.setattr(store, "current_target", lambda: "linux-x64")
     assert "pnpm" in registry.source_install_packages(names)

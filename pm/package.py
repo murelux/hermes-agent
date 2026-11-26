@@ -121,6 +121,13 @@ class Package:
         return self.gaps.get(target)
 
     def is_optional(self, target: str) -> bool:
+        from pm._distro import debian_bun_enabled
+
+        if target in ("linux-x64", "linux-arm64") and debian_bun_enabled():
+            if self.name == "bun":
+                return False
+            if self.name in ("node", "npm", "pnpm"):
+                return True
         return self.optional or target in self.on_demand
 
     def latest_versions(self, target: str, locked: Optional[str] = None) -> list[str]:

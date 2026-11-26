@@ -78,10 +78,12 @@ Click anywhere on a section header (or its chevron) to toggle it. The Tools list
 
 ## Requirements
 
-- **Node.js** ≥ 20 — the TUI runs as a subprocess launched from the Python CLI. `hermes doctor` verifies this.
+- **JavaScript runtime**:
+  - **Linux (Debian family — Debian, Ubuntu, Linux Mint, Pop!\_OS, Raspbian, Kali, elementary)** — runs on Hermes's PM-managed **Bun** runtime (`hermes pm install bun`). Set `HERMES_JS_RUNTIME=node` to fall back to Node.js. Note that Bun does not accept V8's `--max-old-space-size` flag; under cgroup memory limits, the TUI relies on the container/cgroup OOM limit rather than a V8 heap cap, and V8 heap diagnostics degrade gracefully when `node:v8` is unavailable.
+  - **macOS, Windows, Termux, and non-Debian Linux** — **Node.js** ≥ 20 (provisioned by Hermes PM). `hermes doctor` verifies the active runtime for your OS.
 - **TTY** — like the classic CLI, piping stdin or running in non-interactive environments falls back to single-query mode.
 
-On first launch Hermes installs the TUI's Node dependencies into `ui-tui/node_modules` (one-time, a few seconds). Subsequent launches are fast. If you pull a new Hermes version, the TUI bundle is rebuilt automatically when sources are newer than the dist.
+On first launch Hermes installs the TUI's dependencies into `ui-tui/node_modules` (one-time, a few seconds). Subsequent launches are fast. If you pull a new Hermes version, the TUI bundle is rebuilt automatically when sources are newer than the dist.
 
 :::tip Working across git worktrees?
 Contributors who run `hermes --tui --dev` from many worktrees can share one `node_modules` instead of installing per checkout — see [TUI & Desktop from Worktrees](../developer-guide/worktree-ui-dev.md).

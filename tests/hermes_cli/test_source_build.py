@@ -22,6 +22,7 @@ from pm.package import Runner
 
 def use_host_node_as_pm_node(monkeypatch):
     """Freshness reads run only under PM's recorded Node; stand the host's node in for it."""
+    monkeypatch.setenv("HERMES_JS_RUNTIME", "node")
     node, real = Path(shutil.which("node")), pm.installed_package
     monkeypatch.setattr(pm, "installed_package", lambda name, **kwargs: (
         SimpleNamespace(binary=node) if name == "node" else real(name, **kwargs)))
@@ -100,6 +101,7 @@ def source_checkout(tmp_path, monkeypatch):
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setenv("HERMES_RUNTIME_DIR", str(tmp_path / "tools"))
+    monkeypatch.setenv("HERMES_JS_RUNTIME", "node")
     monkeypatch.setenv("HERMES_DISABLE_LAZY_INSTALLS", "0")
     monkeypatch.setenv("ESBUILD_BINARY_PATH", "/wrong/esbuild")
     monkeypatch.setenv("HERMES_PYTHON", "/wrong/python")

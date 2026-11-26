@@ -592,6 +592,19 @@ install_macos_git() {
     fail "Command Line Tools did not finish within 15 minutes. $_remedy" git_missing
 }
 
+is_debian_family() {
+    [ "$(uname -s 2>/dev/null)" = Linux ] || return 1
+    [ -r /etc/os-release ] || return 1
+    local _blob _tok
+    _blob="$(awk -F= '/^(ID|ID_LIKE)=/ { gsub(/["'\'',]/, " ", $2); printf "%s ", tolower($2) }' /etc/os-release 2>/dev/null)"
+    for _tok in $_blob; do
+        case "$_tok" in
+            debian|ubuntu|linuxmint|pop|raspbian|kali|elementary) return 0 ;;
+        esac
+    done
+    return 1
+}
+
 stage_prerequisites() {
     # No git on PATH at all is not the stub: report "git is required" below.
     if [ "$(uname -s 2>/dev/null)" = Darwin ] && command -v git >/dev/null 2>&1 && ! git_runs; then
@@ -617,7 +630,10 @@ stage_prerequisites() {
     # glibc Node links libatomic.so.1, absent on minimal Debian/RHEL hosts. PM
     # installs the distro package with `sudo -n` under its install lock, so
     # cache sudo credentials now, while the terminal can answer the prompt.
+    # Debian-family hosts use Bun by default (no libatomic1 required) unless
+    # HERMES_JS_RUNTIME=node opts back into Node.
     if [ "$NON_INTERACTIVE" != true ] && [[ "$_target" == linux-* && "$_target" != *-musl ]] \
+        && { ! is_debian_family || [ "${HERMES_JS_RUNTIME:-}" = node ]; } \
         && [ "$(id -u)" -ne 0 ] && command -v sudo >/dev/null 2>&1 && has_terminal \
         && ! { ldconfig -p 2>/dev/null || /sbin/ldconfig -p 2>/dev/null; } | grep -q 'libatomic\.so\.1'; then
         log "Node.js needs libatomic.so.1; sudo may ask for your password to install it"

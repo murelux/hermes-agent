@@ -213,11 +213,10 @@ COPY hermes_constants.py hermes_constants.py
 COPY hermes_cli/__init__.py hermes_cli/runtime_state.py hermes_cli/
 COPY scripts/bundles/payload.py scripts/bundles/payload.py
 RUN set -eu; \
-    python3 -c 'from pm import ensure; [ensure(name, explicit=True) for name in ("uv", "chromium", "npm", "ffmpeg", "ripgrep")]'; \
-    python3 -c 'from pathlib import Path; from pm import installed_package; [Path("/usr/local/bin", command).symlink_to(installed_package(package).binary) for command, package in (("python3", "python"), ("node", "node"), ("npm", "npm"), ("ffmpeg", "ffmpeg"), ("rg", "ripgrep"))]; Path("/usr/local/bin/ffprobe").symlink_to(installed_package("ffmpeg").binary.with_name("ffprobe"))'; \
+    python3 -c 'from pm import ensure; [ensure(name, explicit=True) for name in ("uv", "chromium", "bun", "ffmpeg", "ripgrep")]'; \
+    python3 -c 'from pathlib import Path; from pm import installed_package; [Path("/usr/local/bin", command).symlink_to(installed_package(package).binary) for command, package in (("python3", "python"), ("bun", "bun"), ("ffmpeg", "ffmpeg"), ("rg", "ripgrep"))]; Path("/usr/local/bin/bunx").symlink_to(installed_package("bun").binary.with_name("bunx")); Path("/usr/local/bin/ffprobe").symlink_to(installed_package("ffmpeg").binary.with_name("ffprobe"))'; \
     ffmpeg -version >/dev/null; ffprobe -version >/dev/null; rg --version >/dev/null; \
-    python3 -c 'import shutil; from pathlib import Path; from pm import env_for; Path("/usr/local/bin/npx").symlink_to(shutil.which("npx", path=env_for("npm", base_env={})["PATH"]))'; \
-    node --version; npm --version; \
+    bun --version; \
     browser_bin="$(python3 -c 'from pm import installed_package; print(installed_package("chromium").binary)')"; \
     test -n "$browser_bin"; \
     "$browser_bin" --version; \
@@ -315,10 +314,10 @@ RUN /opt/hermes/.venv/bin/python -I scripts/generate_icons.py --source /opt/herm
 
 # Frontend dependencies never enter the runtime layers.
 FROM runtime_base AS frontend_build
-# pnpm installs the workspaces; nothing in the runtime image runs it, so only
-# the build stages (this one and webapp_build) stage it.
-RUN python3 -c 'from pathlib import Path; from pm import ensure, installed_package; ensure("pnpm", explicit=True); Path("/usr/local/bin/pnpm").symlink_to(installed_package("pnpm").binary)' && \
-    pnpm --version
+# Node + pnpm build the frontend bundles in this discarded build stage; nothing in the
+# Debian runtime image ships Node/npm/pnpm (runtime runs on PM-managed Bun).
+RUN python3 -c 'from pathlib import Path; from pm import ensure, installed_package; ensure("npm", explicit=True); ensure("pnpm", explicit=True); [Path("/usr/local/bin", cmd).symlink_to(installed_package(pkg).binary) for cmd, pkg in (("node", "node"), ("npm", "npm"), ("pnpm", "pnpm"))]' && \
+    node --version && pnpm --version
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc ./
 COPY web/package.json web/
 COPY ui-tui/package.json ui-tui/
@@ -345,8 +344,8 @@ RUN node scripts/build/tui.mjs --source /opt/hermes --out /opt/products/tui && \
 # which installs Desktop's dependencies in a private workspace. A stage of its
 # own so Desktop changes leave the TUI and dashboard layers cached.
 FROM runtime_base AS webapp_build
-RUN python3 -c 'from pathlib import Path; from pm import ensure, installed_package; ensure("pnpm", explicit=True); Path("/usr/local/bin/pnpm").symlink_to(installed_package("pnpm").binary)' && \
-    pnpm --version
+RUN python3 -c 'from pathlib import Path; from pm import ensure, installed_package; ensure("npm", explicit=True); ensure("pnpm", explicit=True); [Path("/usr/local/bin", cmd).symlink_to(installed_package(pkg).binary) for cmd, pkg in (("node", "node"), ("npm", "npm"), ("pnpm", "pnpm"))]' && \
+    node --version && pnpm --version
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc ./
 COPY apps/desktop/package.json apps/desktop/
 COPY apps/desktop/scripts/build-webapp.mjs apps/desktop/scripts/
@@ -365,20 +364,21 @@ RUN mkdir -p /opt/hermes/node_modules/.bin && \
     ln -s ../typescript/bin/tsc /opt/hermes/node_modules/.bin/tsc
 
 # ---------- Photon iMessage sidecar deps (baked, NS-606) ----------
-# The photon plugin's Node sidecar needs its own node_modules
-# (spectrum-ts). The install tree is immutable at runtime, so a lazy
-# `npm ci` on first connect would hit EROFS — bake the deps here instead
-# (deterministic installs, NS-559). The patch script is copied alongside
-# the manifests because package.json's postinstall runs it, which also
-# means the spectrum-ts patch is applied at build time. Layer-cached:
+# The photon plugin's JS sidecar needs its own node_modules (spectrum-ts).
+# The install tree is immutable at runtime, so a lazy install on first connect
+# would hit EROFS — bake the deps here with Bun using the committed bun.lock
+# and apply the Spectrum mixed-attachments patch explicitly. Layer-cached:
 # only re-runs when the sidecar manifests/patch change.
 COPY plugins/platforms/photon/sidecar/package.json \
-     plugins/platforms/photon/sidecar/package-lock.json \
+     plugins/platforms/photon/sidecar/bun.lock \
      plugins/platforms/photon/sidecar/patch-spectrum-mixed-attachments.mjs \
      plugins/platforms/photon/sidecar/
 RUN cd plugins/platforms/photon/sidecar && \
-    npm ci --no-audit --fetch-retries=5 && \
-    npm cache clean --force
+    bun install --frozen-lockfile && \
+    bun patch-spectrum-mixed-attachments.mjs && \
+    mkdir -p node_modules && \
+    printf 'bun\n' > node_modules/.hermes-bun-install-stamp && \
+    rm -rf /root/.bun/install/cache
 
 # Shared product outputs are independent of application dependency assembly.
 COPY --from=frontend_build /opt/products/tui /opt/hermes/ui-tui

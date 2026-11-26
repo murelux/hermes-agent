@@ -42,8 +42,9 @@ automatically.
 ## Prerequisites
 
 - A Photon account — sign up at [app.photon.codes][app]
-- Node.js: Hermes uses its managed Node when available.
-  `hermes pm install node` provisions the pin; the adapter can fall back to PATH.
+- **JavaScript runtime**:
+  - **Linux (Debian family)** — Hermes runs the Photon sidecar and installs its dependencies (`bun.lock`) with PM-managed **Bun** (`hermes pm install bun`, overridable via `HERMES_BUN`). Set `HERMES_JS_RUNTIME=node` to fall back to Node.js (`PHOTON_NODE_BIN`).
+  - **macOS, Windows, Termux, and non-Debian Linux** — Hermes uses its managed Node.js (`hermes pm install node`, overridable via `PHOTON_NODE_BIN`); the adapter can fall back to PATH.
 - A phone number that can receive iMessage (used to bind your account)
 
 That's it — there is no public URL or tunnel to set up.

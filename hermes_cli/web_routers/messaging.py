@@ -417,24 +417,16 @@ def _ensure_whatsapp_bridge_dependencies(bridge_dir: Path) -> None:
     if (bridge_dir / "node_modules").exists():
         return
 
-    from hermes_constants import find_node_executable, with_hermes_node_path
+    from hermes_cli.js_runtime import install_deps_command, use_bun_js_runtime
     from utils import env_int
     import pm
 
-    npm = find_node_executable("npm")
-
     try:
-        env = with_hermes_node_path()
-        if npm is None:
-            env = pm.ensure("npm", explicit=True).env
-            installed = pm.installed_package("npm")
-            if installed is None or installed.binary is None:
-                raise pm.InstallError("npm", "npm binary is missing after preparation")
-            npm = str(installed.binary)
-        # npm output is UTF-8; encoding= guards the Windows ANSI-code-page
+        install_argv, env = install_deps_command(frozen=False, silent=True, explicit=True)
+        # Output is UTF-8; encoding= guards the Windows ANSI-code-page
         # default against undefined bytes crashing the reader thread.
         result = subprocess.run(
-            [npm, "install", "--silent"], cwd=str(bridge_dir), capture_output=True, text=True,
+            install_argv, cwd=str(bridge_dir), capture_output=True, text=True,
             encoding="utf-8", errors="replace", timeout=env_int("WHATSAPP_NPM_INSTALL_TIMEOUT", 300),
             env=env, creationflags=windows_hide_flags(),
             check=False,
@@ -446,40 +438,35 @@ def _ensure_whatsapp_bridge_dependencies(bridge_dir: Path) -> None:
 
     if result.returncode != 0:
         detail = "\n".join((result.stderr or result.stdout or "").strip().splitlines()[-10:])
-        raise HTTPException(status_code=500, detail=f"npm install failed for WhatsApp bridge: {detail or 'no output'}")
+        tool_label = "bun install" if use_bun_js_runtime() else "npm install"
+        raise HTTPException(status_code=500, detail=f"{tool_label} failed for WhatsApp bridge: {detail or 'no output'}")
 
 
 def _spawn_whatsapp_pairing_process(session_path: Path, mode: str) -> subprocess.Popen:
     from gateway.platforms.whatsapp_common import resolve_whatsapp_bridge_dir
-    from hermes_constants import ensure_private_store, find_node_executable, with_hermes_node_path
+    from hermes_cli.js_runtime import js_runtime_bin, js_runtime_env, runtime_display_name, script_argv
+    from hermes_constants import ensure_private_store
+    import pm
 
     bridge_dir = resolve_whatsapp_bridge_dir()
     bridge_script = bridge_dir / "bridge.js"
     if not bridge_script.exists():
         raise HTTPException(status_code=500, detail=f"WhatsApp bridge script was not found at {bridge_script}.")
     _ensure_whatsapp_bridge_dependencies(bridge_dir)
-    node = find_node_executable("node")
-    if not node:
-        import pm
-
-        try:
-            pm.ensure("node", explicit=True)
-            installed = pm.installed_package("node")
-            if installed is None or installed.binary is None:
-                raise pm.InstallError("node", "Node.js binary is missing after preparation")
-            node = str(installed.binary)
-        except pm.InstallError as exc:
-            raise HTTPException(status_code=500, detail=f"Node.js preparation failed: {exc}") from exc
+    try:
+        runtime = js_runtime_bin(explicit=True)
+    except pm.InstallError as exc:
+        raise HTTPException(status_code=500, detail=f"{runtime_display_name()} preparation failed: {exc}") from exc
     store_umask = ensure_private_store(session_path)  # pairing writes creds.json + signal keys (#80090)
 
     from tools.environments.local import hermes_subprocess_env
-    # bridge.js and its npm deps never see Hermes' credentials; it needs only the mode and policy below.
-    env = with_hermes_node_path(hermes_subprocess_env())
+    # bridge.js and its deps never see Hermes' credentials; it needs only the mode and policy below.
+    env = js_runtime_env(hermes_subprocess_env())
     env["WHATSAPP_MODE"] = mode
     env["WHATSAPP_DM_POLICY"] = "pairing"
     # Owned: a SIGKILLed dashboard must not leave a pairing bridge holding the session dir.
     return spawn_owned(
-        [node, str(bridge_script), "--pair-only", "--pair-json", "--session", str(session_path)],
+        script_argv(bridge_script, "--pair-only", "--pair-json", "--session", str(session_path), runtime_bin=runtime),
         purpose="whatsapp-pairing", cwd=str(bridge_dir), stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
         text=True, encoding="utf-8", errors="replace", env=env, creationflags=windows_hide_flags(), umask=store_umask,
     )

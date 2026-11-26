@@ -24,7 +24,9 @@ _INSTALLERS: dict[str, tuple[str, ...]] = {
     "apk": ("apk", "add", "libatomic"),
 }
 
-_DEBIAN = {"debian", "ubuntu", "linuxmint", "pop", "raspbian", "kali", "elementary"}
+from pm._distro import DEBIAN_FAMILY_IDS as _DEBIAN
+from pm._distro import os_release_tokens as _os_release_tokens
+
 _RPM = {"rhel", "fedora", "centos", "rocky", "almalinux", "ol", "oracle", "amzn"}
 _ARCH = {"arch", "manjaro", "endeavouros", "garuda", "artix"}
 
@@ -35,12 +37,7 @@ _ATTEMPT: tuple[bool, str] | None = None
 
 
 def _release_tokens() -> set[str]:
-    try:
-        fields = platform.freedesktop_os_release()
-    except OSError:
-        return set()
-    blob = f"{fields.get('ID', '')} {fields.get('ID_LIKE', '')}".lower()
-    return set(blob.replace(",", " ").split())
+    return set(_os_release_tokens())
 
 
 def _manager_order(tokens: set[str]) -> tuple[str, ...]:

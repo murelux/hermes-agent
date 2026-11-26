@@ -98,19 +98,22 @@ def web_build_limits(env: dict[str, str] | None = None) -> dict[str, str]:
     env = dict(env if env is not None else os.environ)
     light = light_build_requested(env)
 
-    # --- V8 heap cap ---------------------------------------------------------
-    tokens = env.get("NODE_OPTIONS", "").split()
-    if not any(t.startswith("--max-old-space-size=") for t in tokens):
-        explicit = (env.get("HERMES_WEB_BUILD_MAX_OLD_SPACE_SIZE") or "").strip()
-        try:
-            heap_mb = int(explicit) if explicit else (
-                _MIN_WEB_BUILD_HEAP_MB if light else _bounded_heap_mb()
-            )
-        except ValueError:
-            heap_mb = _MIN_WEB_BUILD_HEAP_MB if light else _bounded_heap_mb()
-        heap_mb = max(_MIN_WEB_BUILD_HEAP_MB, heap_mb)
-        tokens.append(f"--max-old-space-size={heap_mb}")
-        env["NODE_OPTIONS"] = " ".join(t for t in tokens if t).strip()
+    # --- V8 heap cap (Node only; Bun/JSC rejects V8 flags) -------------------
+    from hermes_cli.js_runtime import use_bun_js_runtime
+
+    if not use_bun_js_runtime():
+        tokens = env.get("NODE_OPTIONS", "").split()
+        if not any(t.startswith("--max-old-space-size=") for t in tokens):
+            explicit = (env.get("HERMES_WEB_BUILD_MAX_OLD_SPACE_SIZE") or "").strip()
+            try:
+                heap_mb = int(explicit) if explicit else (
+                    _MIN_WEB_BUILD_HEAP_MB if light else _bounded_heap_mb()
+                )
+            except ValueError:
+                heap_mb = _MIN_WEB_BUILD_HEAP_MB if light else _bounded_heap_mb()
+            heap_mb = max(_MIN_WEB_BUILD_HEAP_MB, heap_mb)
+            tokens.append(f"--max-old-space-size={heap_mb}")
+            env["NODE_OPTIONS"] = " ".join(t for t in tokens if t).strip()
 
     # --- Native bundler parallelism cap -------------------------------------
     if not env.get("RAYON_NUM_THREADS"):

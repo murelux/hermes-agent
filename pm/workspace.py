@@ -10,6 +10,7 @@ import hashlib
 import json
 import os
 import shutil
+import subprocess
 from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional
@@ -692,11 +693,35 @@ def install_node_sidecar(
         return None  # nothing to install
 
     import pm
+    from pm._distro import debian_bun_enabled
     from pm.install import lazy_installs_allowed
 
     # Tool availability does not authorize mutation of the sidecar itself.
     if not explicit and not lazy_installs_allowed():
         return "lazy installs are disabled — run `hermes plugins install` and approve Node dependencies"
+
+    if debian_bun_enabled():
+        install_cmd = ["install", "--frozen-lockfile"] if (plugin_dir / "bun.lock").is_file() else ["install"]
+        try:
+            runner = pm.ensure("bun", explicit=explicit)
+            installed = pm.installed_package("bun")
+            if installed is None or installed.binary is None:
+                return "bun is missing from the prepared PM environment"
+            proc = runner.run(
+                [str(installed.binary), *install_cmd],
+                cwd=str(plugin_dir),
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=900,
+            )
+        except (pm.InstallError, OSError, subprocess.SubprocessError) as exc:
+            return f"bun {install_cmd[0]} failed to run: {exc}"
+        if proc.returncode != 0:
+            tail = (proc.stderr or proc.stdout or "").strip()[-300:]
+            return f"bun {install_cmd[0]} exited {proc.returncode}: {tail}"
+        return None
 
     # a lockfile means reproducible `npm ci`; plain `npm install` otherwise
     install_cmd = ["ci"] if (plugin_dir / "package-lock.json").is_file() else ["install"]
