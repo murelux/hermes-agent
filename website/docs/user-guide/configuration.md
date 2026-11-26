@@ -129,6 +129,19 @@ MCP servers, builds) keep glibc's default. An explicit `MALLOC_ARENA_MAX` (or
 before launch or set in the profile's `.env`. Set the value to `0`, `false`, or `null` to keep
 glibc's default. Other platforms ignore it.
 
+On Linux `x64` / `arm64`, you can also opt into Hermes's PM-managed **Bun** runtime for
+Hermes-launched JavaScript processes (TUI, Dashboard chat PTY, WhatsApp bridge, and Photon
+sidecar) instead of Node.js:
+
+```yaml
+runtime:
+  js_runtime: "bun"   # "node" (default) or "bun" (Linux x64/arm64)
+```
+
+Install the pinned Bun binary once with `hermes pm install bun` (or let Hermes provision it on
+first launch when lazy installs are allowed). Setting `js_runtime: "node"` returns immediately to
+Node.js. Platforms without a PM Bun package (macOS, Windows, Termux, musl) keep using Node.js.
+
 ## Database Settings
 
 The `database:` section controls how Hermes opens its SQLite state database

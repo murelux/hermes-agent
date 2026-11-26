@@ -388,12 +388,29 @@ def _check_lightpanda() -> None:
 
 @doctor_check()
 def _check_node_and_browser(should_fix: bool, f: Finding) -> None:
-    """Node.js, the Chromium browser_exec launches, Lightpanda engine."""
-    # Only PM's Node counts; Termux's APT distribution is the one that relies on `pkg install nodejs`.
+    """JS runtime (Node.js default, or opt-in Bun on Linux x64/arm64), Chromium, Lightpanda."""
+    from hermes_cli.js_runtime import bun_supported_on_host, configured_js_runtime, find_bun_executable, use_bun_js_runtime
+
+    if configured_js_runtime() == "bun" and not bun_supported_on_host():
+        check_warn(
+            "runtime.js_runtime=bun is unsupported on this target",
+            "(PM ships Bun on linux-x64/linux-arm64 only; using Node.js)",
+        )
+    if use_bun_js_runtime():
+        bun = find_bun_executable() or _pm_tool_path("bun")
+        if bun:
+            check_ok("Bun", f"({bun})")
+        else:
+            check_warn(
+                "Bun not found",
+                "(run: hermes pm install bun; or set runtime.js_runtime: node in config.yaml)",
+            )
     if _pm_tool_path("node") or (_is_termux() and _safe_which("node")):
         check_ok("Node.js")
     elif _is_termux():
         check_info("Node.js not found (optional; install on Termux with: pkg install nodejs)")
+    elif use_bun_js_runtime():
+        check_info("Node.js not installed (optional while runtime.js_runtime is bun)")
     else:
         check_warn("Node.js not found", "(optional; run: hermes pm install node)")
     _check_chromium(should_fix)

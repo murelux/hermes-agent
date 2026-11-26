@@ -233,31 +233,36 @@ def _is_timeout_error(exc: BaseException) -> bool:
 
 def check_requirements() -> bool:
     """Report readiness or permission to prepare at connect; never provision here."""
+    from hermes_cli.js_runtime import find_deps_installer, find_js_runtime, missing_runtime_hint, runtime_display_name
     from pm import lazy_installs_allowed
 
     can_prepare = lazy_installs_allowed()
     if not HTTPX_AVAILABLE:
         logger.warning("photon: httpx not installed — pip install httpx")
         return False
-    if not (_get_scoped_secret("PHOTON_NODE_BIN") or find_node_executable("node") or can_prepare):
-        logger.warning("photon: node binary not found on PATH, in the pm store, or via PHOTON_NODE_BIN")
+    if not (find_js_runtime(node_override=_get_scoped_secret("PHOTON_NODE_BIN")) or can_prepare):
+        logger.warning(
+            "photon: %s binary not found (%s)",
+            runtime_display_name(),
+            missing_runtime_hint(),
+        )
         return False
     if not sidecar_deps_installed():
         # spectrum-ts not installed yet, or node_modules/ was partially created
-        # by an aborted npm install (ENOSPC, network timeout, EACCES).
+        # by an aborted install (ENOSPC, network timeout, EACCES).
         # Checking spectrum-ts presence — not just node_modules/ existence —
         # prevents a false positive where an empty/broken node_modules/ dir
         # causes check_requirements() to return True while the sidecar crashes
         # at runtime with an unrelated-looking missing-module error.
         #
-        # NS-606: if we can self-install at connect time — npm on PATH and
+        # NS-606: if we can self-install at connect time — installer on PATH and
         # the (resolved, possibly mirrored) sidecar dir is writable — report
         # available so the gateway creates the adapter and ``_start_sidecar``
         # cold-installs from the committed lockfile (on hosted images the
         # user has no CLI to run `hermes photon setup`, so the connect path
         # must self-heal). Otherwise keep returning False so
         # `hermes setup` / status surface the missing-deps state.
-        if (find_node_executable("npm") or can_prepare) and _dir_writable(_sidecar_dir()):
+        if (find_deps_installer() or can_prepare) and _dir_writable(_sidecar_dir()):
             return True
         # DEBUG, not WARNING: normal pre-setup state, and check_fn is polled from hot paths.
         npm_error = ""
@@ -267,7 +272,7 @@ def check_requirements() -> bool:
         if npm_error:
             logger.debug(
                 "photon: spectrum-ts not installed at %s "
-                "(last npm error: %s) — run: hermes photon setup",
+                "(last install error: %s) — run: hermes photon setup",
                 _sidecar_dir(),
                 npm_error,
             )
@@ -289,41 +294,47 @@ def _sidecar_deps_stale() -> bool:
 def _reinstall_sidecar_deps() -> None:
     """Reinstall the sidecar's node_modules from the lockfile (blocking).
 
-    Mirrors ``hermes photon install-sidecar``: ``npm ci`` for an exact,
-    reproducible install, falling back to ``npm install`` if the lockfile is
-    missing or drifted. Runs the postinstall patch as part of the install.
+    Mirrors ``hermes photon install-sidecar``: frozen lockfile install
+    (``bun install --frozen-lockfile`` on Debian-family, ``npm ci`` elsewhere),
+    falling back to an unfrozen install if the lockfile is missing or drifted.
     Best-effort — a failure here just leaves the (stale) deps in place and the
     normal ``_start_sidecar`` readiness check reports the real error.
     """
     import pm
+    from hermes_cli.js_runtime import install_deps_command, use_bun_js_runtime
+    from .sidecar_paths import _BUN_INSTALL_STAMP
 
+    using_bun = use_bun_js_runtime()
     try:
-        npm = find_node_executable("npm")
-        env = with_hermes_node_path()
-        if npm is None:
-            env = pm.ensure("npm").env
-            installed = pm.installed_package("npm")
-            if installed is None or installed.binary is None:
-                raise pm.InstallError("npm", "ensured but no selected binary was recorded")
-            npm = str(installed.binary)
+        frozen_cmd, env = install_deps_command(frozen=True)
+        fallback_cmd, _ = install_deps_command(frozen=False)
     except pm.InstallError as exc:
         logger.warning("[photon] cannot prepare sidecar dependencies: %s", exc)
         return
     from hermes_cli._subprocess_compat import windows_hide_flags  # no console flash on Windows
 
-    def _run(verb: str) -> subprocess.CompletedProcess:
+    def _run(cmd: list[str]) -> subprocess.CompletedProcess:
         return subprocess.run(
-            [npm, verb], stdin=subprocess.DEVNULL, cwd=str(_sidecar_dir()), capture_output=True, text=True, encoding="utf-8",
+            cmd, stdin=subprocess.DEVNULL, cwd=str(_sidecar_dir()), capture_output=True, text=True, encoding="utf-8",
             errors="replace", check=False, env=env, timeout=_NPM_REINSTALL_TIMEOUT, creationflags=windows_hide_flags())
     try:
-        result = _run("ci")
+        result = _run(frozen_cmd)
         if result.returncode != 0:
-            logger.warning("[photon] sidecar `npm ci` failed; falling back to `npm install`")
-            result = _run("install")
+            logger.warning("[photon] sidecar `%s` failed; falling back to `%s`", " ".join(frozen_cmd), " ".join(fallback_cmd))
+            result = _run(fallback_cmd)
     except subprocess.TimeoutExpired:  # retried on the next reconnect tick
         logger.error("[photon] sidecar dependency reinstall timed out after %ss", _NPM_REINSTALL_TIMEOUT)
         return
     if result.returncode == 0:
+        if using_bun:
+            patch_script = _sidecar_dir() / "patch-spectrum-mixed-attachments.mjs"
+            if patch_script.is_file():
+                with contextlib.suppress(subprocess.TimeoutExpired, OSError):
+                    _run([frozen_cmd[0], str(patch_script), str(_sidecar_dir())])
+            with contextlib.suppress(OSError):
+                stamp = _sidecar_dir() / "node_modules" / _BUN_INSTALL_STAMP
+                stamp.parent.mkdir(parents=True, exist_ok=True)
+                stamp.write_text("bun\n", encoding="utf-8")
         logger.info("[photon] sidecar dependencies reinstalled from lockfile")
     else:
         logger.error("[photon] sidecar dependency reinstall failed: %s", (result.stderr or result.stdout or "").strip())
@@ -625,7 +636,11 @@ class PhotonAdapter(BasePlatformAdapter):
         self._sidecar_token = _get_scoped_secret("PHOTON_SIDECAR_TOKEN") or secrets.token_hex(16)
         autostart = str(_get_scoped_secret("PHOTON_SIDECAR_AUTOSTART", "true")).lower()
         self._autostart_sidecar = autostart not in ("0", "false", "no")
-        self._node_bin = _get_scoped_secret("PHOTON_NODE_BIN") or find_node_executable("node")
+        from hermes_cli.js_runtime import find_bun_executable, use_bun_js_runtime
+        if use_bun_js_runtime():
+            self._node_bin = find_bun_executable()
+        else:
+            self._node_bin = _get_scoped_secret("PHOTON_NODE_BIN") or find_node_executable("node")
         # Presence watchdog (second layer behind the sidecar's own zombie-stream detection):
         # respawns only when the sidecar's HTTP loop hangs; 10-min interval because shared
         # lines are quiet for hours. Config key wins, then env; None-aware so 0 disables it.
@@ -1079,10 +1094,12 @@ class PhotonAdapter(BasePlatformAdapter):
             await asyncio.to_thread(_reinstall_sidecar_deps)
             if not sidecar_deps_installed():
                 # Deterministic on immutable images — non-retryable so it doesn't spin silently.
+                from hermes_cli.js_runtime import use_bun_js_runtime
+                install_hint = "bun install --frozen-lockfile" if use_bun_js_runtime() else "npm ci"
                 raise PhotonSidecarStartupError(
                     f"Photon sidecar deps could not be installed into "
-                    f"{_sidecar_dir()} (see log for the npm error). "
-                    f"Run: cd {_sidecar_dir()} && npm ci   (or `hermes photon setup`)",
+                    f"{_sidecar_dir()} (see log for the install error). "
+                    f"Run: cd {_sidecar_dir()} && {install_hint}   (or `hermes photon setup`)",
                     code="SIDECAR_DEPS_MISSING", retryable=False)
         # `hermes update` bumps the lockfile without reinstalling node_modules; the sidecar
         # would spawn against stale deps and die on every reconnect.
@@ -1092,12 +1109,17 @@ class PhotonAdapter(BasePlatformAdapter):
 
     async def _apply_spectrum_patch(self, hide_flags: int) -> None:
         """Run the mixed-attachment patch script (best-effort, off the loop: up to 10s, every reconnect)."""
+        from hermes_cli.js_runtime import js_runtime_env, script_argv
         try:
             patch = await asyncio.to_thread(
                 subprocess.run,
-                [self._node_bin, str(_sidecar_dir() / "patch-spectrum-mixed-attachments.mjs"), str(_sidecar_dir())],
+                script_argv(
+                    _sidecar_dir() / "patch-spectrum-mixed-attachments.mjs",
+                    str(_sidecar_dir()),
+                    runtime_bin=self._node_bin,
+                ),
                 capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=10, check=False,
-                creationflags=hide_flags, env=with_hermes_node_path())
+                creationflags=hide_flags, env=js_runtime_env())
             if patch.returncode != 0:
                 raise RuntimeError((patch.stderr or patch.stdout or "").strip())
             if patch.stderr.strip():
@@ -1106,20 +1128,26 @@ class PhotonAdapter(BasePlatformAdapter):
             logger.warning("[photon] failed to apply Spectrum mixed attachment patch: %s", exc)
 
     async def _start_sidecar(self) -> None:
+        from hermes_cli.js_runtime import (
+            js_runtime_bin,
+            js_runtime_env,
+            missing_runtime_hint,
+            runtime_display_name,
+            script_argv,
+        )
         if self._node_bin is None:
             import pm
 
             try:
-                await asyncio.to_thread(pm.ensure, "node")
-                installed = pm.installed_package("node")
-                if installed is None or installed.binary is None:
-                    raise pm.InstallError("node", "ensured but no selected binary was recorded")
-                self._node_bin = str(installed.binary)
+                self._node_bin = await asyncio.to_thread(
+                    js_runtime_bin,
+                    node_override=_get_scoped_secret("PHOTON_NODE_BIN"),
+                )
             except pm.InstallError as exc:
                 raise PhotonSidecarStartupError(str(exc), code="SIDECAR_NODE_MISSING", retryable=False) from exc
         await self._ensure_sidecar_deps()
         await self._reap_stale_sidecar()
-        env = with_hermes_node_path()
+        env = js_runtime_env()
         env.update({
             "PHOTON_PROJECT_ID": self._project_id, "PHOTON_PROJECT_SECRET": self._project_secret,
             "PHOTON_SIDECAR_PORT": str(self._sidecar_port), "PHOTON_SIDECAR_BIND": self._sidecar_bind,
@@ -1130,7 +1158,7 @@ class PhotonAdapter(BasePlatformAdapter):
         await self._apply_spectrum_patch(windows_hide_flags())
         try:
             self._sidecar_proc = subprocess.Popen(  # noqa: ASYNC220 -- persistent sidecar; callers use the Popen pipes and poll()
-                [self._node_bin, str(_sidecar_dir() / "index.mjs")],
+                script_argv(_sidecar_dir() / "index.mjs", runtime_bin=self._node_bin),
                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env,
                 # detached-spawn: ok — exits on stdin EOF (PHOTON_SIDECAR_WATCH_STDIN), so it dies with this process
                 start_new_session=(sys.platform != "win32"),
@@ -1140,11 +1168,11 @@ class PhotonAdapter(BasePlatformAdapter):
                 creationflags=windows_hide_flags(),
             )
         except FileNotFoundError as exc:
-            # Deterministic: node isn't resolvable (pm store or PATH).
+            # Deterministic: runtime isn't resolvable (pm store or PATH).
             # Retrying can never fix a missing binary (OOF-153).
             raise PhotonSidecarStartupError(
-                f"node binary not found ({self._node_bin!r}) — install Node.js "
-                f"18+ or run `hermes pm install`: {exc}",
+                f"{runtime_display_name()} binary not found ({self._node_bin!r}) — "
+                f"{missing_runtime_hint()}: {exc}",
                 code="SIDECAR_NODE_MISSING",
                 retryable=False,
             ) from exc

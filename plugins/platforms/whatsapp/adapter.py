@@ -20,7 +20,18 @@ from gateway.platforms._shared import (
 from gateway.platforms.send_targets import StandaloneSendPolicy, regex_stripped_parser
 from hermes_cli._subprocess_compat import windows_detach_flags
 from hermes_cli.process_identity import release_process_group_once_empty, spawn_owned
-from hermes_constants import (ensure_private_store, find_node_executable, get_hermes_dir, with_hermes_node_path)
+from hermes_constants import (ensure_private_store, get_hermes_dir)
+from hermes_cli.js_runtime import (
+    find_js_runtime,
+    install_deps_command,
+    is_js_runtime_process,
+    js_runtime_bin,
+    js_runtime_env,
+    missing_runtime_hint,
+    runtime_display_name,
+    script_argv,
+    use_bun_js_runtime,
+)
 
 _IS_WINDOWS = platform.system() == "Windows"
 
@@ -88,18 +99,19 @@ def _port_listener_pids(port: int) -> list:
 
 
 def _pid_looks_like_node_bridge(pid: int) -> bool:
-    """Fail-closed: the live process must be a ``node`` executable (a scan-time PID can be a stranger by kill time).
+    """Fail-closed: the live process must be a JS runtime (``node`` or ``bun``) executable.
 
     ``_kill_port_process`` discovers PIDs from a netstat/lsof scan of a TCP port — a bare number naming a
     *stranger* process (#89614 class: an unverified scan-time PID force-killed later can be anything,
     including a critical system process). Before any kill, require the live process to actually look like
-    our Baileys bridge: a ``node`` executable. Any ambiguity (process gone, unreadable cmdline) refuses the
-    kill.
+    our Baileys bridge: a ``node`` or ``bun`` executable. Any ambiguity (process gone, unreadable cmdline)
+    refuses the kill.
     """
     try:
         import psutil
         proc = psutil.Process(pid)
-        return "node" in (proc.name() or "").lower() or "node" in " ".join(proc.cmdline() or []).lower().split(" ", 1)[0]
+        first = " ".join(proc.cmdline() or []).split(" ", 1)[0]
+        return is_js_runtime_process(proc.name() or "", first)
     except Exception:
         return False
 
@@ -536,16 +548,16 @@ def check_whatsapp_requirements() -> bool:
     """
     Check if WhatsApp dependencies are available.
 
-    WhatsApp requires a Node.js bridge for most implementations.
+    WhatsApp requires a JS runtime bridge (Bun on Debian-family Linux, Node.js elsewhere).
     """
-    _node = find_node_executable("node")
-    if not _node:
+    _runtime = find_js_runtime()
+    if not _runtime:
         from pm import lazy_installs_allowed
 
         # Let connect prepare a missing runtime, but never install during discovery.
         return lazy_installs_allowed()
     try:
-        return subprocess.run([_node, "--version"], timeout=5, env=with_hermes_node_path(), **_RUN_TEXT, check=False).returncode == 0
+        return subprocess.run([_runtime, "--version"], timeout=5, env=js_runtime_env(), **_RUN_TEXT, check=False).returncode == 0
     except Exception:
         return False
 
@@ -716,17 +728,8 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         print(f"[{self.name}] Installing WhatsApp bridge dependencies...")
         detail = ""
         try:  # Default 300s accommodates slow systems like an Unraid NAS.
-            import pm
-
-            _npm_bin = find_node_executable("npm")
-            env = with_hermes_node_path()
-            if _npm_bin is None:
-                env = pm.ensure("npm").env
-                installed = pm.installed_package("npm")
-                if installed is None or installed.binary is None:
-                    raise pm.InstallError("npm", "ensured but no selected binary was recorded")
-                _npm_bin = str(installed.binary)
-            install_result = subprocess.run([_npm_bin, "install", "--silent"], cwd=str(bridge_dir), timeout=env_int("WHATSAPP_NPM_INSTALL_TIMEOUT", 300),
+            install_argv, env = install_deps_command(frozen=False, silent=True)
+            install_result = subprocess.run(install_argv, cwd=str(bridge_dir), timeout=env_int("WHATSAPP_NPM_INSTALL_TIMEOUT", 300),
                                             env=env, **_RUN_TEXT, check=False)
             if install_result.returncode == 0:
                 print(f"[{self.name}] Dependencies installed")
@@ -734,12 +737,14 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                     if _pkg_hash:
                         _dep_stamp.write_text(_pkg_hash, encoding="utf-8")
                 return True
-            print(f"[{self.name}] npm install failed: {install_result.stderr}")
+            tool_label = "bun install" if use_bun_js_runtime() else "npm install"
+            print(f"[{self.name}] {tool_label} failed: {install_result.stderr}")
             detail = f" ({install_result.stderr.strip()[-500:]})" if install_result.stderr else ""
         except Exception as e:
             print(f"[{self.name}] Failed to install dependencies: {e}")
             detail = f" ({e})"
-        self._set_fatal_error("whatsapp_npm_install_failed", f"WhatsApp bridge npm install failed{detail}. "
+        tool_label = "bun install" if use_bun_js_runtime() else "npm install"
+        self._set_fatal_error("whatsapp_npm_install_failed", f"WhatsApp bridge {tool_label} failed{detail}. "
                               "Run `hermes whatsapp`, then restart `hermes gateway`.", retryable=False)
         return False
 
@@ -826,7 +831,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         # DEFAULT profile's WHATSAPP_* values, so every bridge-consumed key is re-resolved from this
         # profile (dropped on a scoped miss), never inherited from the launch env.
         from tools.environments.local import hermes_subprocess_env
-        bridge_env = with_hermes_node_path(hermes_subprocess_env())
+        bridge_env = js_runtime_env(hermes_subprocess_env())
         reply_prefix = _wenv("WHATSAPP_REPLY_PREFIX")
         if reply_prefix:
             bridge_env["WHATSAPP_REPLY_PREFIX"] = reply_prefix
@@ -914,9 +919,10 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         """Node + bridge script + creds.json + aiohttp present, else a named fatal error (an unpaired bridge only prints QR codes; retries would pay 30s each)."""
         bridge_path = Path(self._bridge_script)
         creds_path = self._session_path / "creds.json"
+        runtime_name = runtime_display_name()
         checks = (
-            (check_whatsapp_requirements, ("[%s] Node.js not found. WhatsApp requires Node.js.", self.name),
-             "whatsapp_node_missing", "Node.js is not installed — install Node.js and re-run `hermes gateway`."),
+            (check_whatsapp_requirements, ("[%s] %s not found. WhatsApp requires %s.", self.name, runtime_name, runtime_name),
+             "whatsapp_node_missing", f"{runtime_name} is not installed — {missing_runtime_hint()} Then re-run `hermes gateway`."),
             (bridge_path.exists, ("[%s] Bridge script not found: %s", self.name, bridge_path),
              "whatsapp_bridge_missing", f"WhatsApp bridge script missing at {bridge_path}."),
             (creds_path.exists, ("[%s] WhatsApp is enabled but not paired (no creds.json at %s). Pair from the dashboard or run "
@@ -952,12 +958,12 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             raise
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
-        """Start (or adopt) the Node.js bridge and wait for it to be ready."""
-        if find_node_executable("node") is None:
+        """Start (or adopt) the JS bridge and wait for it to be ready."""
+        if find_js_runtime() is None:
             import pm
 
             try:
-                await asyncio.to_thread(pm.ensure, "node")
+                await asyncio.to_thread(js_runtime_bin)
             except pm.InstallError as exc:
                 self._set_fatal_error("whatsapp_node_missing", str(exc), retryable=False)
                 return False
@@ -1029,13 +1035,14 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             # Bridge output goes to a log file so QR codes, errors, and reconnection messages survive for troubleshooting.
             self._bridge_log = self._session_path.parent / "bridge.log"
             self._bridge_log_fh = bridge_log_fh = _open_bridge_log(self._bridge_log, private=store_umask >= 0)
-            node = find_node_executable("node")
-            if node is None:
-                raise RuntimeError("Node.js is no longer available; run `hermes pm install`")
+            runtime = find_js_runtime()
+            if runtime is None:
+                raise RuntimeError(f"{runtime_display_name()} is no longer available; {missing_runtime_hint()}")
             bridge_env = self._bridge_env()
             self._bridge_process = _spawn_bridge_process(
-                [node, str(bridge_path), "--port", str(self._bridge_port), "--session", str(self._session_path),
-                 "--mode", _wenv("WHATSAPP_MODE", "self-chat")], bridge_log_fh, bridge_env, store_umask)
+                script_argv(bridge_path, "--port", str(self._bridge_port), "--session", str(self._session_path),
+                            "--mode", _wenv("WHATSAPP_MODE", "self-chat"), runtime_bin=runtime),
+                bridge_log_fh, bridge_env, store_umask)
             _write_bridge_pidfile(self._session_path, self._bridge_process.pid, self._bridge_port)
             _write_bridge_fingerprint(self._session_path, _bridge_config_fingerprint(bridge_env, self._bridge_package_hash()))
             if not await self._wait_for_bridge():

@@ -114,7 +114,7 @@ Messaging and voice extras are separate requests, not implied by `all`.
 
 When you run `hermes dashboard` without the dependencies, it will tell you what to install. If the frontend hasn't been built yet, it builds automatically on first launch with the Node and pnpm Hermes provisions.
 
-The Chat tab is part of every `hermes dashboard` launch — the embedded browser chat pane (running the TUI over PTY/WebSocket) is always available, with no extra flag required.
+The Chat tab is part of every `hermes dashboard` launch — the embedded browser chat pane (running the TUI over PTY/WebSocket, using Node.js by default or PM-managed Bun on Linux `x64`/`arm64` when `runtime.js_runtime: bun` is set in `~/.hermes/config.yaml`) is always available, with no extra flag required.
 
 ## Pages
 

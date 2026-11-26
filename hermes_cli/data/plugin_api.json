@@ -45,6 +45,7 @@
         "gateway.status",
         "hermes_cli.auth_oauth_pkce_plugin",
         "hermes_cli.config",
+        "hermes_cli.js_runtime",
         "hermes_cli.plugin_events",
         "hermes_cli.plugin_provider_requests",
         "hermes_constants",

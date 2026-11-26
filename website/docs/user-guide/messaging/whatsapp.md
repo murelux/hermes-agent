@@ -117,7 +117,8 @@ gateway reports `No WhatsApp bridge token`. A bridge launched by hand without
 
 ## Prerequisites
 
-- **Node.js v20+** and **npm** — the WhatsApp bridge runs as a Node.js process
+- **Node.js v20+** and **npm** (default) — the WhatsApp bridge runs as a Node.js process
+- **Opt-in Bun (Linux `x64`/`arm64`)** — set `runtime.js_runtime: bun` in `~/.hermes/config.yaml` and run `hermes pm install bun` to install dependencies and run the bridge with PM-managed Bun
 - **A phone with WhatsApp** installed (for scanning the QR code)
 
 Ordinary QR pairing does not need a browser. Accounts that require passkey verification

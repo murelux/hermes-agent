@@ -28,12 +28,14 @@ _MIRROR_FILES = (
     "index.mjs",
     "package.json",
     "package-lock.json",
+    "bun.lock",
     "patch-spectrum-mixed-attachments.mjs",
     ".npmrc",
 )
+_BUN_INSTALL_STAMP = ".hermes-bun-install-stamp"
 # Tests monkeypatch these module globals directly; the accessors honor a non-None value.
 _SIDECAR_DIR: Optional[Path] = None
-# Written by `hermes photon install-sidecar` on npm failure so check_requirements() can
+# Written by `hermes photon install-sidecar` on install failure so check_requirements() can
 # surface the root cause later; cleared on success.
 _NPM_ERROR_LOG: Optional[Path] = None
 _NPM_ERROR_LOG_MAX_CHARS = 300
@@ -55,11 +57,23 @@ _dir_writable = dir_writable
 
 
 def _lock_newer_than_install(sidecar_dir: Path) -> bool:
-    """True when the committed lockfile postdates npm's install marker
-    (``node_modules/.package-lock.json``) — the same signal ``npm ci`` uses. False on any
-    stat failure so an odd filesystem never blocks start."""
-    lockfile = sidecar_dir / "package-lock.json"
-    marker = sidecar_dir / "node_modules" / ".package-lock.json"
+    """True when the committed lockfile postdates the install marker.
+
+    Uses ``bun.lock`` vs ``node_modules/.hermes-bun-install-stamp`` (or ``node_modules/.bun``)
+    when running on Bun (Debian-family), else ``package-lock.json`` vs
+    ``node_modules/.package-lock.json``. False on any stat failure so an odd filesystem never
+    blocks start.
+    """
+    from hermes_cli.js_runtime import use_bun_js_runtime
+
+    if use_bun_js_runtime():
+        lockfile = sidecar_dir / "bun.lock"
+        marker = sidecar_dir / "node_modules" / _BUN_INSTALL_STAMP
+        if not marker.exists():
+            marker = sidecar_dir / "node_modules" / ".bun"
+    else:
+        lockfile = sidecar_dir / "package-lock.json"
+        marker = sidecar_dir / "node_modules" / ".package-lock.json"
     try:
         return lockfile.stat().st_mtime > marker.stat().st_mtime
     except OSError:

@@ -53,6 +53,7 @@ with a name allows that one name only.
 | `gateway.status` | whole module | developer-guide / plugins docs |
 | `hermes_cli.auth_oauth_pkce_plugin` | whole module | developer-guide / plugins docs |
 | `hermes_cli.config` | whole module | developer-guide / plugins docs |
+| `hermes_cli.js_runtime` | whole module | developer-guide / plugins docs |
 | `hermes_cli.plugin_events` | whole module | developer-guide / plugins docs |
 | `hermes_cli.plugin_provider_requests` | whole module | developer-guide / plugins docs |
 | `hermes_constants` | whole module | developer-guide / plugins docs |

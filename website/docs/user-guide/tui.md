@@ -78,7 +78,8 @@ Click anywhere on a section header (or its chevron) to toggle it. The Tools list
 
 ## Requirements
 
-- **Node.js** ≥ 20 — the TUI runs as a subprocess launched from the Python CLI. `hermes doctor` verifies this.
+- **Node.js** ≥ 20 (default, provisioned by Hermes PM) — the TUI runs as a subprocess launched from the Python CLI. `hermes doctor` verifies this.
+  - **Opt-in Bun (Linux `x64`/`arm64`)**: set `runtime.js_runtime: bun` in `~/.hermes/config.yaml` and run `hermes pm install bun` to run the TUI on PM-managed Bun. Bun does not accept V8's `--max-old-space-size` flag; under cgroup memory limits, the TUI relies on the container/cgroup OOM limit and V8 heap diagnostics degrade gracefully when `node:v8` is unavailable.
 - **TTY** — like the classic CLI, piping stdin or running in non-interactive environments falls back to single-query mode.
 
 On first launch Hermes installs the TUI's Node dependencies into `ui-tui/node_modules` (one-time, a few seconds). Subsequent launches are fast. If you pull a new Hermes version, the TUI bundle is rebuilt automatically when sources are newer than the dist.

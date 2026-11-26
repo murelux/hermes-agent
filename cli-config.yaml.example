@@ -44,9 +44,15 @@ database:
 # process (Linux/glibc only; child commands keep glibc's default). An explicit
 # MALLOC_ARENA_MAX (exported or in .env) wins. 0, false, or null = glibc default
 # (8 per CPU core). Default: 4.
+# js_runtime selects the JavaScript runtime for Hermes-launched JS processes
+# (TUI, Dashboard chat PTY, WhatsApp bridge, Photon sidecar):
+#   "node"  (default) PM-managed Node.js on all platforms.
+#   "bun"   Opt-in PM-managed Bun on Linux x64/arm64 (requires `hermes pm install bun`;
+#           ignored on platforms without a PM Bun package).
 runtime:
   nofile_soft_limit: 4096
   malloc_arena_max: 4
+  js_runtime: "node"
 
 # =============================================================================
 # Attachments

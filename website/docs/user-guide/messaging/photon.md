@@ -44,6 +44,7 @@ automatically.
 - A Photon account — sign up at [app.photon.codes][app]
 - Node.js: Hermes uses its managed Node when available.
   `hermes pm install node` provisions the pin; the adapter can fall back to PATH.
+- Opt-in Bun (Linux `x64`/`arm64`): set `runtime.js_runtime: bun` in `~/.hermes/config.yaml` and run `hermes pm install bun` to install the sidecar from `bun.lock` and run it with PM-managed Bun (set `runtime.js_runtime: node` to return to Node.js / `PHOTON_NODE_BIN`).
 - A phone number that can receive iMessage (used to bind your account)
 
 That's it — there is no public URL or tunnel to set up.
